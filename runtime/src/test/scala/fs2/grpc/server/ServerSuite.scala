@@ -224,7 +224,6 @@ class ServerSuite extends Fs2GrpcSuite {
     listener.onMessage("a")
     listener.onMessage("ab")
     listener.onHalfClose()
-    listener.onMessage("abc")
     tc.tick()
 
     assertEquals(dummy.messages.length, 3)
