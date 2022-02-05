@@ -23,7 +23,6 @@ package fs2
 package grpc
 package server
 
-import cats.syntax.all._
 import cats.effect._
 import cats.effect.std.Dispatcher
 import io.grpc._
@@ -35,46 +34,23 @@ class Fs2ServerCallHandler[F[_]: Async] private (
 
   def unaryToUnaryCall[Request, Response](
       implementation: (Request, Metadata) => F[Response]
-  ): ServerCallHandler[Request, Response] = new ServerCallHandler[Request, Response] {
-    def startCall(call: ServerCall[Request, Response], headers: Metadata): ServerCall.Listener[Request] = {
-      val listener = dispatcher.unsafeRunSync(Fs2UnaryServerCallListener[F](call, dispatcher, options))
-      listener.unsafeUnaryResponse(new Metadata(), _ flatMap { request => implementation(request, headers) })
-      listener
-    }
-  }
+  ): ServerCallHandler[Request, Response] =
+    Fs2UnaryServerCallHandler.unary(implementation, options, dispatcher)
 
   def unaryToStreamingCall[Request, Response](
       implementation: (Request, Metadata) => Stream[F, Response]
-  ): ServerCallHandler[Request, Response] = new ServerCallHandler[Request, Response] {
-    def startCall(call: ServerCall[Request, Response], headers: Metadata): ServerCall.Listener[Request] = {
-      val listener = dispatcher.unsafeRunSync(Fs2UnaryServerCallListener[F](call, dispatcher, options))
-      listener.unsafeStreamResponse(
-        new Metadata(),
-        v => Stream.eval(v) flatMap { request => implementation(request, headers) }
-      )
-      listener
-    }
-  }
+  ): ServerCallHandler[Request, Response] =
+    Fs2UnaryServerCallHandler.stream(implementation, options, dispatcher)
 
   def streamingToUnaryCall[Request, Response](
       implementation: (Stream[F, Request], Metadata) => F[Response]
-  ): ServerCallHandler[Request, Response] = new ServerCallHandler[Request, Response] {
-    def startCall(call: ServerCall[Request, Response], headers: Metadata): ServerCall.Listener[Request] = {
-      val listener = dispatcher.unsafeRunSync(Fs2StreamServerCallListener[F](call, dispatcher, options))
-      listener.unsafeUnaryResponse(new Metadata(), implementation(_, headers))
-      listener
-    }
-  }
+  ): ServerCallHandler[Request, Response] =
+    Fs2StreamServerCallHandler.unary(implementation, options, dispatcher)
 
   def streamingToStreamingCall[Request, Response](
       implementation: (Stream[F, Request], Metadata) => Stream[F, Response]
-  ): ServerCallHandler[Request, Response] = new ServerCallHandler[Request, Response] {
-    def startCall(call: ServerCall[Request, Response], headers: Metadata): ServerCall.Listener[Request] = {
-      val listener = dispatcher.unsafeRunSync(Fs2StreamServerCallListener[F](call, dispatcher, options))
-      listener.unsafeStreamResponse(new Metadata(), implementation(_, headers))
-      listener
-    }
-  }
+  ): ServerCallHandler[Request, Response] =
+    Fs2StreamServerCallHandler.stream(implementation, options, dispatcher)
 }
 
 object Fs2ServerCallHandler {
