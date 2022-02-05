@@ -19,27 +19,32 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-package fs2
-package grpc
-package server
+package fs2.grpc.internal.server
 
 import cats.effect.Async
 import cats.effect.std.Dispatcher
 import io.grpc._
+import fs2._
+import fs2.grpc.internal.UnsafeChannel
+import fs2.grpc.server.ServerOptions
+import fs2.grpc.server.ServerCallOptions
+import io.grpc.ServerCallHandler
 
-object Fs2UnaryServerCallHandler {
+object Fs2StreamServerCallHandler {
+
   import Fs2StatefulServerCall.Cancel
-  private val Noop: Cancel = () => ()
-  private val Closed: Cancel = () => ()
 
-  private def mkListener[Request, Response](
-      run: Request => Cancel,
+  private def mkListener[F[_]: Async, Request, Response](
+      run: Stream[F, Request] => Cancel,
       call: ServerCall[Request, Response]
   ): ServerCall.Listener[Request] =
     new ServerCall.Listener[Request] {
-
-      private[this] var request: Request = _
-      private[this] var cancel: Cancel = Noop
+      private[this] val ch = UnsafeChannel.empty[Request]
+      private[this] val cancel: Cancel = run(ch.stream.mapChunks { chunk =>
+        val size = chunk.size
+        if (size > 0) call.request(size)
+        chunk
+      })
 
       override def onCancel(): Unit = {
         cancel()
@@ -47,29 +52,14 @@ object Fs2UnaryServerCallHandler {
       }
 
       override def onMessage(message: Request): Unit =
-        if (request == null) {
-          request = message
-        } else if (cancel eq Noop) {
-          earlyClose(Status.INTERNAL.withDescription("Too many requests"))
-        }
+        ch.send(message)
 
       override def onHalfClose(): Unit =
-        if (cancel eq Noop) {
-          if (request == null) {
-            earlyClose(Status.INTERNAL.withDescription("Half-closed without a request"))
-          } else {
-            cancel = run(request)
-          }
-        }
-
-      private def earlyClose(status: Status): Unit = {
-        cancel = Closed
-        call.close(status, new Metadata())
-      }
+        ch.close()
     }
 
   def unary[F[_]: Async, Request, Response](
-      impl: (Request, Metadata) => F[Response],
+      impl: (Stream[F, Request], Metadata) => F[Response],
       options: ServerOptions,
       dispatcher: Dispatcher[F]
   ): ServerCallHandler[Request, Response] =
@@ -78,13 +68,13 @@ object Fs2UnaryServerCallHandler {
 
       def startCall(call: ServerCall[Request, Response], headers: Metadata): ServerCall.Listener[Request] = {
         val responder = Fs2StatefulServerCall.setup(opt, call, dispatcher)
-        call.request(2)
-        mkListener[Request, Response](req => responder.unary(impl(req, headers)), call)
+        call.request(1) // prefetch size
+        mkListener[F, Request, Response](req => responder.unary(impl(req, headers)), call)
       }
     }
 
   def stream[F[_]: Async, Request, Response](
-      impl: (Request, Metadata) => fs2.Stream[F, Response],
+      impl: (Stream[F, Request], Metadata) => Stream[F, Response],
       options: ServerOptions,
       dispatcher: Dispatcher[F]
   ): ServerCallHandler[Request, Response] =
@@ -93,8 +83,8 @@ object Fs2UnaryServerCallHandler {
 
       def startCall(call: ServerCall[Request, Response], headers: Metadata): ServerCall.Listener[Request] = {
         val responder = Fs2StatefulServerCall.setup(opt, call, dispatcher)
-        call.request(2)
-        mkListener[Request, Response](req => responder.stream(impl(req, headers)), call)
+        call.request(1) // prefetch size
+        mkListener[F, Request, Response](req => responder.stream(impl(req, headers)), call)
       }
     }
 }

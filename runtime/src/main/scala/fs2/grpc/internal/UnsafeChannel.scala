@@ -19,84 +19,18 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-package fs2.grpc.server
+package fs2.grpc.internal
 
-import java.util.concurrent.atomic.AtomicBoolean
+import cats.effect._
 import java.util.concurrent.atomic.AtomicReference
-import cats.effect.Async
-import cats.effect.std.Dispatcher
-import io.grpc.Metadata
-import io.grpc.ServerCall
-import scala.annotation.tailrec
+import java.util.concurrent.atomic.AtomicBoolean
+import UnsafeChannel.State
 import scala.collection.immutable.Queue
-import fs2._
-import io.grpc.ServerCallHandler
-
-object Fs2StreamServerCallHandler {
-
-  import Fs2StatefulServerCall.Cancel
-
-  private def mkListener[F[_]: Async, Request, Response](
-      run: Stream[F, Request] => Cancel,
-      call: ServerCall[Request, Response]
-  ): ServerCall.Listener[Request] =
-    new ServerCall.Listener[Request] {
-      private[this] val ch = UnsafeChannel.empty[Request]
-      private[this] val cancel: Cancel = run(ch.stream.mapChunks { chunk =>
-        val size = chunk.size
-        if (size > 0) call.request(size)
-        chunk
-      })
-
-      override def onCancel(): Unit = {
-        cancel()
-        ()
-      }
-
-      override def onMessage(message: Request): Unit =
-        ch.send(message)
-
-      override def onHalfClose(): Unit =
-        ch.close()
-    }
-
-  def unary[F[_]: Async, Request, Response](
-      impl: (Stream[F, Request], Metadata) => F[Response],
-      options: ServerOptions,
-      dispatcher: Dispatcher[F]
-  ): ServerCallHandler[Request, Response] =
-    new ServerCallHandler[Request, Response] {
-      private val opt = options.callOptionsFn(ServerCallOptions.default)
-
-      def startCall(call: ServerCall[Request, Response], headers: Metadata): ServerCall.Listener[Request] = {
-        val responder = Fs2StatefulServerCall.setup(opt, call, dispatcher)
-        call.request(1) // prefetch size
-        mkListener[F, Request, Response](req => responder.unary(impl(req, headers)), call)
-      }
-    }
-
-  def stream[F[_]: Async, Request, Response](
-      impl: (Stream[F, Request], Metadata) => Stream[F, Response],
-      options: ServerOptions,
-      dispatcher: Dispatcher[F]
-  ): ServerCallHandler[Request, Response] =
-    new ServerCallHandler[Request, Response] {
-      private val opt = options.callOptionsFn(ServerCallOptions.default)
-
-      def startCall(call: ServerCall[Request, Response], headers: Metadata): ServerCall.Listener[Request] = {
-        val responder = Fs2StatefulServerCall.setup(opt, call, dispatcher)
-        call.request(1) // prefetch size
-        mkListener[F, Request, Response](req => responder.stream(impl(req, headers)), call)
-      }
-    }
-}
-
-import UnsafeChannel._
 
 final class UnsafeChannel[A] extends AtomicReference[State[A]](State.Consumed) {
 
-  import UnsafeChannel.State._
-  import scala.annotation.nowarn
+  import State._
+  import scala.annotation._
 
   /** Send message to stream. This method is thread-unsafe
     */

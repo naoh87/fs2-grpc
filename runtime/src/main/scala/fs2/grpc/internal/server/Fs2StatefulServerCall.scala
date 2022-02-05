@@ -19,10 +19,11 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-package fs2.grpc.server
+package fs2.grpc.internal.server
 
 import cats.effect._
 import cats.effect.std.Dispatcher
+import fs2.grpc.server.ServerCallOptions
 import io.grpc._
 
 object Fs2StatefulServerCall {

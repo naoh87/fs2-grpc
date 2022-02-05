@@ -25,6 +25,8 @@ package server
 
 import cats.effect._
 import cats.effect.std.Dispatcher
+import fs2.grpc.internal.server.Fs2StreamServerCallHandler
+import fs2.grpc.internal.server.Fs2UnaryServerCallHandler
 import io.grpc._
 
 class Fs2ServerCallHandler[F[_]: Async] private (
