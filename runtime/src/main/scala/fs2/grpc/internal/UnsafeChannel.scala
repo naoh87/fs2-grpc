@@ -32,7 +32,7 @@ final class UnsafeChannel[A] extends AtomicReference[State[A]](State.Consumed) {
   import State._
   import scala.annotation._
 
-  /** Send message to stream. This method is thread-unsafe
+  /** Send message to stream.
     */
   @nowarn
   @tailrec
@@ -49,7 +49,7 @@ final class UnsafeChannel[A] extends AtomicReference[State[A]](State.Consumed) {
     }
   }
 
-  /** Close stream. This method is thread-unsafe
+  /** Close stream.
     */
   @tailrec
   def close(): Unit =

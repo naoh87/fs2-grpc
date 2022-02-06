@@ -25,60 +25,82 @@ import cats.effect._
 import cats.effect.std.Dispatcher
 import fs2.grpc.server.ServerCallOptions
 import io.grpc._
+import fs2._
 
 object Fs2StatefulServerCall {
-  type Cancel = () => Any
+  type Cancel = SyncIO[Unit]
 
-  def setup[F[_], I, O](
+  def setup[I, O](
       options: ServerCallOptions,
-      call: ServerCall[I, O],
-      dispatcher: Dispatcher[F]
-  ): Fs2StatefulServerCall[F, I, O] = {
-    call.setMessageCompression(options.messageCompression)
-    options.compressor.map(_.name).foreach(call.setCompression)
-    new Fs2StatefulServerCall[F, I, O](call, dispatcher)
-  }
+      call: ServerCall[I, O]
+  ): SyncIO[Fs2StatefulServerCall[I, O]] =
+    SyncIO {
+      call.setMessageCompression(options.messageCompression)
+      options.compressor.map(_.name).foreach(call.setCompression)
+      new Fs2StatefulServerCall[I, O](call)
+    }
 }
 
-final class Fs2StatefulServerCall[F[_], Request, Response](
-    call: ServerCall[Request, Response],
-    dispatcher: Dispatcher[F]
+final class Fs2StatefulServerCall[Request, Response](
+    call: ServerCall[Request, Response]
 ) {
 
   import Fs2StatefulServerCall.Cancel
 
-  def stream(response: fs2.Stream[F, Response])(implicit F: Sync[F]): Cancel =
-    run(response.map(sendMessage).compile.drain)
-
-  def unary(response: F[Response])(implicit F: Sync[F]): Cancel =
-    run(F.map(response)(sendMessage))
-
-  private var sentHeader: Boolean = false
-
-  private def sendMessage(message: Response): Unit =
-    if (!sentHeader) {
-      sentHeader = true
-      call.sendHeaders(new Metadata())
-      call.sendMessage(message)
-    } else {
-      call.sendMessage(message)
-    }
-
-  private def run(completed: F[Unit])(implicit F: Sync[F]): Cancel =
-    dispatcher.unsafeRunCancelable(F.guaranteeCase(completed) {
-      case Outcome.Succeeded(_) => closeStream(Status.OK, new Metadata())
-      case Outcome.Errored(e) =>
-        e match {
-          case ex: StatusException =>
-            closeStream(ex.getStatus, Option(ex.getTrailers).getOrElse(new Metadata()))
-          case ex: StatusRuntimeException =>
-            closeStream(ex.getStatus, Option(ex.getTrailers).getOrElse(new Metadata()))
-          case ex =>
-            closeStream(Status.INTERNAL.withDescription(ex.getMessage).withCause(ex), new Metadata())
+  def stream[F[_]](response: Stream[F, Response], dispatcher: Dispatcher[F])(implicit F: Async[F]): SyncIO[Cancel] =
+    run(
+      response.pull.peek1
+        .flatMap {
+          case Some((_, tail)) =>
+            Pull.suspend {
+              call.sendHeaders(new Metadata())
+              tail.map(call.sendMessage).pull.echo
+            }
+          case None => Pull.done
         }
-      case Outcome.Canceled() => closeStream(Status.CANCELLED, new Metadata())
-    })
+        .stream
+        .compile
+        .drain,
+      dispatcher
+    )
 
-  private def closeStream(status: Status, metadata: Metadata)(implicit F: Sync[F]): F[Unit] =
+  def unary[F[_]](response: F[Response], dispatcher: Dispatcher[F])(implicit F: Async[F]): SyncIO[Cancel] =
+    run(
+      F.map(response) { message =>
+        call.sendHeaders(new Metadata())
+        call.sendMessage(message)
+      },
+      dispatcher
+    )
+
+  def request(n: Int): SyncIO[Unit] =
+    SyncIO(call.request(n))
+
+  def close(status: Status, metadata: Metadata): SyncIO[Unit] =
+    SyncIO(call.close(status, metadata))
+
+  private def run[F[_]](completed: F[Unit], dispatcher: Dispatcher[F])(implicit F: Sync[F]): SyncIO[Cancel] = {
+    SyncIO {
+      val cancel = dispatcher.unsafeRunCancelable(F.guaranteeCase(completed) {
+        case Outcome.Succeeded(_) => closeStreamF(Status.OK, new Metadata())
+        case Outcome.Errored(e) =>
+          e match {
+            case ex: StatusException =>
+              closeStreamF(ex.getStatus, Option(ex.getTrailers).getOrElse(new Metadata()))
+            case ex: StatusRuntimeException =>
+              closeStreamF(ex.getStatus, Option(ex.getTrailers).getOrElse(new Metadata()))
+            case ex =>
+              closeStreamF(Status.INTERNAL.withDescription(ex.getMessage).withCause(ex), new Metadata())
+          }
+        case Outcome.Canceled() => closeStreamF(Status.CANCELLED, new Metadata())
+      })
+      SyncIO {
+        cancel()
+        ()
+      }
+    }
+  }
+
+  private def closeStreamF[F[_]](status: Status, metadata: Metadata)(implicit F: Sync[F]): F[Unit] =
     F.delay(call.close(status, metadata))
 }

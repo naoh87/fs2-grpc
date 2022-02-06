@@ -22,6 +22,7 @@
 package fs2.grpc.internal.server
 
 import cats.effect.Async
+import cats.effect.SyncIO
 import cats.effect.std.Dispatcher
 import io.grpc._
 import fs2._
@@ -35,7 +36,7 @@ object Fs2StreamServerCallHandler {
   import Fs2StatefulServerCall.Cancel
 
   private def mkListener[F[_]: Async, Request, Response](
-      run: Stream[F, Request] => Cancel,
+      run: Stream[F, Request] => SyncIO[Cancel],
       call: ServerCall[Request, Response]
   ): ServerCall.Listener[Request] =
     new ServerCall.Listener[Request] {
@@ -44,12 +45,10 @@ object Fs2StreamServerCallHandler {
         val size = chunk.size
         if (size > 0) call.request(size)
         chunk
-      })
+      }).unsafeRunSync()
 
-      override def onCancel(): Unit = {
-        cancel()
-        ()
-      }
+      override def onCancel(): Unit =
+        cancel.unsafeRunSync()
 
       override def onMessage(message: Request): Unit =
         ch.send(message)
@@ -67,10 +66,11 @@ object Fs2StreamServerCallHandler {
       private val opt = options.callOptionsFn(ServerCallOptions.default)
 
       def startCall(call: ServerCall[Request, Response], headers: Metadata): ServerCall.Listener[Request] = {
-        val responder = Fs2StatefulServerCall.setup(opt, call, dispatcher)
-        call.request(1) // prefetch size
-        mkListener[F, Request, Response](req => responder.unary(impl(req, headers)), call)
-      }
+        for {
+          responder <- Fs2StatefulServerCall.setup(opt, call)
+          _ <- responder.request(1)
+        } yield mkListener[F, Request, Response](req => responder.unary(impl(req, headers), dispatcher), call)
+      }.unsafeRunSync()
     }
 
   def stream[F[_]: Async, Request, Response](
@@ -82,9 +82,10 @@ object Fs2StreamServerCallHandler {
       private val opt = options.callOptionsFn(ServerCallOptions.default)
 
       def startCall(call: ServerCall[Request, Response], headers: Metadata): ServerCall.Listener[Request] = {
-        val responder = Fs2StatefulServerCall.setup(opt, call, dispatcher)
-        call.request(1) // prefetch size
-        mkListener[F, Request, Response](req => responder.stream(impl(req, headers)), call)
-      }
+        for {
+          responder <- Fs2StatefulServerCall.setup(opt, call)
+          _ <- responder.request(1)
+        } yield mkListener[F, Request, Response](req => responder.stream(impl(req, headers), dispatcher), call)
+      }.unsafeRunSync()
     }
 }
