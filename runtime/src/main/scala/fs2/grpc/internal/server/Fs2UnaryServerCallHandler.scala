@@ -66,7 +66,7 @@ object Fs2UnaryServerCallHandler {
 
       private def earlyClose(current: State[Request], status: Status): SyncIO[Unit] = {
         if (current.cancel.isEmpty) {
-          state.set(State(Some(SyncIO.unit), None)) >> call.close(status, new Metadata())
+          state.set(current.copy(cancel = Some(SyncIO.unit))) >> call.close(status, new Metadata())
         } else {
           SyncIO.unit
         }
