@@ -21,72 +21,72 @@
 
 package fs2.grpc.internal
 
-import cats.effect._
-import java.util.concurrent.atomic.AtomicReference
 import java.util.concurrent.atomic.AtomicBoolean
-import UnsafeChannel.State
+import cats.effect._
+import fs2.grpc.internal.UnsafeChannel.State
+import scala.annotation.nowarn
 import scala.collection.immutable.Queue
 
-final class UnsafeChannel[A] extends AtomicReference[State[A]](State.Consumed) {
+@nowarn
+final class UnsafeChannel[A](val ref: Ref[SyncIO, State[A]]) extends AnyVal {
 
   import State._
-  import scala.annotation._
 
   /** Send message to stream.
     */
-  @nowarn
-  @tailrec
-  def send(a: A): Unit = {
-    get() match {
-      case open: Open[A] =>
-        if (!compareAndSet(open, open.append(a))) {
-          send(a)
-        }
-      case s: Suspended[A] =>
-        lazySet(Consumed)
-        s.resume(new Open(Queue(a)))
-      case closed: Closed[A] =>
-    }
-  }
+  def send(a: A): SyncIO[Unit] =
+    ref
+      .modify[SyncIO[Unit]] {
+        case open: Open[A] =>
+          (open.append(a), SyncIO.unit)
+        case s: Suspended[A] =>
+          (Consumed, s.resumeS(new Open(Queue(a))))
+        case closed =>
+          (closed, SyncIO.unit)
+      }
+      .flatMap(identity)
 
   /** Close stream.
     */
-  @tailrec
-  def close(): Unit =
-    get() match {
-      case open: Open[_] =>
-        if (!compareAndSet(open, open.close())) {
-          close()
-        }
-      case s: Suspended[_] =>
-        lazySet(Done)
-        s.resume(Done)
-      case _ =>
-    }
+  def close(): SyncIO[Unit] =
+    ref
+      .modify {
+        case open: Open[A] =>
+          (open.close(), SyncIO.unit)
+        case s: Suspended[A] =>
+          (Done, s.resumeS(Done))
+        case closed =>
+          (closed, SyncIO.unit)
+      }
+      .flatMap(identity)
 
   import fs2._
 
   /** This method can be called at most once
     */
   def stream[F[_]](implicit F: Async[F]): Stream[F, A] = {
-    @nowarn
     def go(): Pull[F, A, Unit] =
       Pull
-        .suspend {
-          val got = getAndSet(Consumed)
-          if (got eq Consumed) {
+        .eval(ref.get.to[F])
+        .flatMap {
+          case Consumed =>
             Pull.eval(F.async[State[A]] { cb =>
-              F.delay {
-                val next = new Suspended[A](s => cb(Right(s)))
-                if (!compareAndSet(Consumed, next)) {
-                  cb(Right(getAndSet(Consumed)))
-                  None
-                } else {
-                  Some(F.delay(cb(Right(Cancelled))))
+              val next = new Suspended[A](s => cb(Right(s)))
+              ref
+                .modify {
+                  case Consumed => (next, None)
+                  case other => (Consumed, Some(other))
                 }
-              }
+                .map {
+                  case None =>
+                    Some(F.delay(cb(Right(Cancelled))))
+                  case Some(value) =>
+                    cb(Right(value))
+                    None
+                }
+                .to[F]
             })
-          } else Pull.pure(got)
+          case other => Pull.pure(other)
         }
         .flatMap {
           case open: Open[A] => Pull.output(Chunk.queue(open.queue)) >> go()
@@ -99,7 +99,8 @@ final class UnsafeChannel[A] extends AtomicReference[State[A]](State.Consumed) {
 }
 
 object UnsafeChannel {
-  def empty[A]: UnsafeChannel[A] = new UnsafeChannel[A]
+  def empty[A]: SyncIO[UnsafeChannel[A]] =
+    Ref[SyncIO].of[State[A]](State.Consumed).map(new UnsafeChannel[A](_))
 
   sealed trait State[+A]
 
@@ -121,6 +122,11 @@ object UnsafeChannel {
         if (!getAndSet(true)) {
           f(state)
         }
+
+      def resumeS(state: State[A]): SyncIO[Unit] =
+        SyncIO(if (!getAndSet(true)) {
+          f(state)
+        })
     }
   }
 }

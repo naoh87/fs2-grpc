@@ -36,11 +36,11 @@ object Fs2StreamServerCallHandler {
   import Fs2StatefulServerCall.Cancel
 
   private def mkListener[F[_]: Async, Request, Response](
+      ch: UnsafeChannel[Request],
       run: Stream[F, Request] => SyncIO[Cancel],
       call: ServerCall[Request, Response]
   ): ServerCall.Listener[Request] =
     new ServerCall.Listener[Request] {
-      private[this] val ch = UnsafeChannel.empty[Request]
       private[this] val cancel: Cancel = run(ch.stream.mapChunks { chunk =>
         val size = chunk.size
         if (size > 0) call.request(size)
@@ -51,10 +51,10 @@ object Fs2StreamServerCallHandler {
         cancel.unsafeRunSync()
 
       override def onMessage(message: Request): Unit =
-        ch.send(message)
+        ch.send(message).unsafeRunSync()
 
       override def onHalfClose(): Unit =
-        ch.close()
+        ch.close().unsafeRunSync()
     }
 
   def unary[F[_]: Async, Request, Response](
@@ -69,7 +69,8 @@ object Fs2StreamServerCallHandler {
         for {
           responder <- Fs2StatefulServerCall.setup(opt, call)
           _ <- responder.request(1)
-        } yield mkListener[F, Request, Response](req => responder.unary(impl(req, headers), dispatcher), call)
+          ch <- UnsafeChannel.empty[Request]
+        } yield mkListener[F, Request, Response](ch, req => responder.unary(impl(req, headers), dispatcher), call)
       }.unsafeRunSync()
     }
 
@@ -85,7 +86,8 @@ object Fs2StreamServerCallHandler {
         for {
           responder <- Fs2StatefulServerCall.setup(opt, call)
           _ <- responder.request(1)
-        } yield mkListener[F, Request, Response](req => responder.stream(impl(req, headers), dispatcher), call)
+          ch <- UnsafeChannel.empty[Request]
+        } yield mkListener[F, Request, Response](ch, req => responder.stream(impl(req, headers), dispatcher), call)
       }.unsafeRunSync()
     }
 }
