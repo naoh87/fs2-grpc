@@ -54,15 +54,30 @@ final class UnsafeChannel[A] extends AtomicReference[State[A]](State.Consumed) {
   @tailrec
   def close(): Unit =
     get() match {
-      case open: Open[_] =>
-        if (!compareAndSet(open, open.close())) {
+      case open: Open[A] =>
+        if (!compareAndSet(open, open.close(None))) {
           close()
         }
-      case s: Suspended[_] =>
+      case s: Suspended[A] =>
         lazySet(Done)
         s.resume(Done)
       case _ =>
     }
+
+  @tailrec
+  def error(th: Throwable): Unit =
+    get() match {
+      case open: Open[A] =>
+        if (!compareAndSet(open, open.close(Some(th)))) {
+          error(th)
+        }
+      case s: Suspended[A] =>
+        val done = new Closed[A](Queue.empty, Some(th))
+        lazySet(done)
+        s.resume(done)
+      case _ =>
+    }
+
 
   import fs2._
 
@@ -90,7 +105,9 @@ final class UnsafeChannel[A] extends AtomicReference[State[A]](State.Consumed) {
         }
         .flatMap {
           case open: Open[A] => Pull.output(Chunk.queue(open.queue)) >> go()
-          case completed: Closed[A] => Pull.output(Chunk.queue(completed.queue))
+          case completed: Closed[A] =>
+            Pull.output(Chunk.queue(completed.queue)) >>
+              completed.error.map(Pull.raiseError[F]).getOrElse(Pull.done)
           case suspended: Suspended[A] => Pull.done // unexpected
         }
 
@@ -105,16 +122,16 @@ object UnsafeChannel {
 
   object State {
     private[UnsafeChannel] val Consumed: State[Nothing] = new Open(Queue.empty)
-    private[UnsafeChannel] val Cancelled: State[Nothing] = new Closed(Queue.empty)
-    private[UnsafeChannel] val Done: State[Nothing] = new Closed(Queue.empty)
+    private[UnsafeChannel] val Cancelled: State[Nothing] = new Closed(Queue.empty, None)
+    private[UnsafeChannel] val Done: State[Nothing] = new Closed(Queue.empty, None)
 
     class Open[A](val queue: Queue[A]) extends State[A] {
       def append(a: A): Open[A] = new Open(queue.enqueue(a))
 
-      def close(): Closed[A] = new Closed(queue)
+      def close(error: Option[Throwable]): Closed[A] = new Closed(queue, error)
     }
 
-    class Closed[A](val queue: Queue[A]) extends State[A]
+    class Closed[A](val queue: Queue[A], val error: Option[Throwable]) extends State[A]
 
     class Suspended[A](val f: State[A] => Unit) extends AtomicBoolean(false) with State[A] {
       def resume(state: State[A]): Unit =
