@@ -156,11 +156,8 @@ class ServerSuite extends Fs2GrpcSuite {
   runTest("zero messages to streamingToStreaming") { (tc, d) =>
     val dummy = new DummyServerCall
 
-    val handler = Fs2StreamServerCallHandler.stream[IO, String, Int](
-      (_, _) => Stream.emit(3).repeat.take(5),
-      ServerOptions.default,
-      d
-    )
+    val handler = Fs2ServerCallHandler[IO](d, ServerOptions.default)
+      .streamingToStreamingCall[String, Int]((_, _) => Stream.emit(3).repeat.take(5))
     val listener = handler.startCall(dummy, new Metadata())
 
     listener.onHalfClose()
@@ -174,11 +171,10 @@ class ServerSuite extends Fs2GrpcSuite {
 
   runTest("cancellation for streamingToStreaming") { (tc, d) =>
     val dummy = new DummyServerCall
-    val handler = Fs2StreamServerCallHandler.stream[IO, String, Int](
-      (_, _) => Stream.emit(3).repeat.take(5).zipLeft(Stream.awakeDelay[IO](1.seconds)),
-      ServerOptions.default,
-      d
-    )
+    val handler = Fs2ServerCallHandler[IO](d, ServerOptions.default)
+      .streamingToStreamingCall[String, Int]((_, _) =>
+        Stream.emit(3).repeat.take(5).zipLeft(Stream.awakeDelay[IO](1.seconds))
+      )
     val listener = handler.startCall(dummy, new Metadata())
 
     tc.tick()
@@ -195,8 +191,8 @@ class ServerSuite extends Fs2GrpcSuite {
       options: ServerOptions = ServerOptions.default
   ): (TestContext, Dispatcher[IO]) => Unit = { (tc, d) =>
     val dummy = new DummyServerCall
-    val handler =
-      Fs2StreamServerCallHandler.stream[IO, String, Int]((req, _) => req.map(_.length).intersperse(0), options, d)
+    val handler = Fs2ServerCallHandler[IO](d, options)
+      .streamingToStreamingCall[String, Int]((req, _) => req.map(_.length).intersperse(0))
     val listener = handler.startCall(dummy, new Metadata())
 
     listener.onMessage("a")
@@ -214,11 +210,10 @@ class ServerSuite extends Fs2GrpcSuite {
     val dummy = new DummyServerCall
     val error = new RuntimeException("hello")
 
-    val handler = Fs2StreamServerCallHandler.stream[IO, String, Int](
-      (req, _) => req.map(_.length) ++ Stream.emit(0) ++ Stream.raiseError[IO](error),
-      ServerOptions.default,
-      d
-    )
+    val handler = Fs2ServerCallHandler[IO](d, ServerOptions.default)
+      .streamingToStreamingCall[String, Int]((req, _) =>
+        req.map(_.length) ++ Stream.emit(0) ++ Stream.raiseError[IO](error)
+      )
     val listener = handler.startCall(dummy, new Metadata())
 
     listener.onMessage("a")
@@ -243,7 +238,8 @@ class ServerSuite extends Fs2GrpcSuite {
 
     val dummy = new DummyServerCall
 
-    val handler = Fs2StreamServerCallHandler.unary[IO, String, Int]((req, _) => implementation(req), so, d)
+    val handler = Fs2ServerCallHandler[IO](d, so)
+      .streamingToUnaryCall[String, Int]((req, _) => implementation(req))
     val listener = handler.startCall(dummy, new Metadata())
 
     listener.onMessage("ab")
