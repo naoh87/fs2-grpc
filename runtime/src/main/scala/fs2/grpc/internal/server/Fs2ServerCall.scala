@@ -27,25 +27,25 @@ import fs2.grpc.server.ServerCallOptions
 import io.grpc._
 import fs2._
 
-object Fs2StatefulServerCall {
+object Fs2ServerCall {
   type Cancel = SyncIO[Unit]
 
   def setup[I, O](
       options: ServerCallOptions,
       call: ServerCall[I, O]
-  ): SyncIO[Fs2StatefulServerCall[I, O]] =
+  ): SyncIO[Fs2ServerCall[I, O]] =
     SyncIO {
       call.setMessageCompression(options.messageCompression)
       options.compressor.map(_.name).foreach(call.setCompression)
-      new Fs2StatefulServerCall[I, O](call)
+      new Fs2ServerCall[I, O](call)
     }
 }
 
-final class Fs2StatefulServerCall[Request, Response](
+final class Fs2ServerCall[Request, Response](
     call: ServerCall[Request, Response]
 ) {
 
-  import Fs2StatefulServerCall.Cancel
+  import Fs2ServerCall.Cancel
 
   def stream[F[_]](response: Stream[F, Response], dispatcher: Dispatcher[F])(implicit F: Async[F]): SyncIO[Cancel] =
     run(

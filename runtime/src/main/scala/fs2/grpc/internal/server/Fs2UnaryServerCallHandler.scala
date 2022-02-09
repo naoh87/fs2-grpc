@@ -31,13 +31,13 @@ import io.grpc._
 
 object Fs2UnaryServerCallHandler {
 
-  import Fs2StatefulServerCall.Cancel
+  import Fs2ServerCall.Cancel
 
   case class State[Request](cancel: Option[Cancel], request: Option[Request])
 
   private def mkListener[Request, Response](
       run: Request => SyncIO[Cancel],
-      call: Fs2StatefulServerCall[Request, Response],
+      call: Fs2ServerCall[Request, Response],
       state: Ref[SyncIO, State[Request]]
   ): ServerCall.Listener[Request] =
     new ServerCall.Listener[Request] {
@@ -100,9 +100,9 @@ object Fs2UnaryServerCallHandler {
   private def startCallSync[F[_], Request, Response](
       call: ServerCall[Request, Response],
       options: ServerCallOptions
-  )(f: Fs2StatefulServerCall[Request, Response] => Request => SyncIO[Cancel]): SyncIO[ServerCall.Listener[Request]] = {
+  )(f: Fs2ServerCall[Request, Response] => Request => SyncIO[Cancel]): SyncIO[ServerCall.Listener[Request]] = {
     for {
-      call <- Fs2StatefulServerCall.setup(options, call)
+      call <- Fs2ServerCall.setup(options, call)
       _ <- call.request(2)
       state <- Ref.of[SyncIO, State[Request]](State(None, None))
     } yield mkListener[Request, Response](f(call), call, state)
