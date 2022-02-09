@@ -33,44 +33,52 @@ object Fs2UnaryServerCallHandler {
 
   import Fs2ServerCall.Cancel
 
-  case class State[Request](cancel: Option[Cancel], request: Option[Request])
+  sealed trait Context[A]
+  object Context {
+    def init[A](cb: A => SyncIO[Cancel]): SyncIO[Ref[SyncIO, Context[A]]] =
+      Ref[SyncIO].of[Context[A]](BeforeCall(cb, None))
+  }
+  case class BeforeCall[A](cb: A => SyncIO[Cancel], request: Option[A]) extends Context[A] {
+    def isEmpty: Boolean = request.isEmpty
+    def set(a: A): BeforeCall[A] = copy(request = Some(a))
+  }
+  case class Called[A](cancel: Cancel) extends Context[A]
 
   private def mkListener[Request, Response](
-      run: Request => SyncIO[Cancel],
       call: Fs2ServerCall[Request, Response],
-      state: Ref[SyncIO, State[Request]]
+      ctx: Ref[SyncIO, Context[Request]]
   ): ServerCall.Listener[Request] =
     new ServerCall.Listener[Request] {
       override def onCancel(): Unit =
-        state.get.flatMap(_.cancel.getOrElse(SyncIO.unit)).unsafeRunSync()
+        ctx.get
+          .flatMap {
+            case Called(cancel) => cancel
+            case _ => SyncIO.unit
+          }
+          .unsafeRunSync()
 
       override def onMessage(message: Request): Unit =
-        state.get
+        ctx.get
           .flatMap {
-            case cur if cur.request.isEmpty =>
-              state.set(cur.copy(request = Some(message)))
-            case cur =>
-              earlyClose(cur, Status.INTERNAL.withDescription("Too many requests"))
+            case p: BeforeCall[Request] if p.isEmpty => ctx.set(p.set(message))
+            case c => sendError(c, Status.INTERNAL.withDescription("Too many requests"))
           }
           .unsafeRunSync()
 
       override def onHalfClose(): Unit =
-        state.get
+        ctx.get
           .flatMap {
-            case State(None, Some(request)) =>
-              run(request).flatMap(c => state.set(State(Some(c), None)))
-            case cur =>
-              earlyClose(cur, Status.INTERNAL.withDescription("Half-closed without a request"))
+            case BeforeCall(cb, Some(r)) => cb(r).flatMap(c => ctx.set(Called(c)))
+            case c => sendError(c, Status.INTERNAL.withDescription("Half-closed without a request"))
           }
           .unsafeRunSync()
 
-      private def earlyClose(current: State[Request], status: Status): SyncIO[Unit] = {
-        if (current.cancel.isEmpty) {
-          state.set(current.copy(cancel = Some(SyncIO.unit))) >> call.close(status, new Metadata())
-        } else {
-          SyncIO.unit
+      private def sendError(c: Context[Request], state: Status): SyncIO[Unit] =
+        c match {
+          case _: BeforeCall[Request] => ctx.set(Called(SyncIO.unit)) >> call.close(state, new Metadata())
+          case _ => SyncIO.unit
         }
-      }
+
     }
 
   def unary[F[_]: Async, Request, Response](
@@ -104,7 +112,7 @@ object Fs2UnaryServerCallHandler {
     for {
       call <- Fs2ServerCall.setup(options, call)
       _ <- call.request(2)
-      state <- Ref.of[SyncIO, State[Request]](State(None, None))
-    } yield mkListener[Request, Response](f(call), call, state)
+      ctx <- Context.init(f(call))
+    } yield mkListener[Request, Response](call, ctx)
   }
 }
