@@ -19,7 +19,7 @@
  * CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE SOFTWARE.
  */
 
-package fs2.grpc.internal.server
+package fs2.grpc.server.internal
 
 import cats.effect.Async
 import cats.effect.Ref
@@ -29,7 +29,7 @@ import fs2.grpc.server.ServerCallOptions
 import fs2.grpc.server.ServerOptions
 import io.grpc._
 
-object Fs2UnaryServerCallHandler {
+private[server] object Fs2UnaryServerCallHandler {
 
   import Fs2ServerCall.Cancel
 
@@ -111,6 +111,8 @@ object Fs2UnaryServerCallHandler {
   )(f: Fs2ServerCall[Request, Response] => Request => SyncIO[Cancel]): SyncIO[ServerCall.Listener[Request]] = {
     for {
       call <- Fs2ServerCall.setup(options, call)
+      // We expect only 1 request, but we ask for 2 requests here so that if a misbehaving client
+      // sends more than 1 requests, ServerCall will catch it.
       _ <- call.request(2)
       ctx <- Context.init(f(call))
     } yield mkListener[Request, Response](call, ctx)

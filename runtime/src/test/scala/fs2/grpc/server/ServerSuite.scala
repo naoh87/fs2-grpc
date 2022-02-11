@@ -27,8 +27,7 @@ import scala.concurrent.duration._
 import cats.effect._
 import cats.effect.std.Dispatcher
 import cats.effect.testkit.TestContext
-import fs2._
-import fs2.grpc.internal.server._
+import fs2.grpc.server.internal.Fs2UnaryServerCallHandler
 import io.grpc._
 
 class ServerSuite extends Fs2GrpcSuite {
