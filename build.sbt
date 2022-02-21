@@ -34,7 +34,8 @@ inThisBuild(
       // API that is not extended by end-users
       ProblemFilters.exclude[ReversedMissingMethodProblem]("fs2.grpc.GeneratedCompanion.mkClient"),
       // package private API
-      ProblemFilters.exclude[DirectMissingMethodProblem]("fs2.grpc.client.StreamIngest.create")
+      ProblemFilters.exclude[DirectMissingMethodProblem]("fs2.grpc.client.StreamIngest.create"),
+      ProblemFilters.exclude[DirectMissingMethodProblem]("fs2.grpc.server.internal.*")
     )
   )
 )
